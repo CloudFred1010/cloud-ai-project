@@ -30,5 +30,24 @@ services:
     command: >
       start-dev
 
+  keycloak-b:
+    image: quay.io/keycloak/keycloak:21.1.1
+    container_name: local-keycloak-b
+    environment:
+      KEYCLOAK_ADMIN: admin2
+      KEYCLOAK_ADMIN_PASSWORD: admin2
+      DB_VENDOR: postgres
+      DB_ADDR: postgres
+      DB_DATABASE: keycloak_db
+      DB_USER: keycloak
+      DB_PASSWORD: keycloak
+    # NOTE: Different external port mapping to avoid conflicts
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+    command: >
+      start-dev
+
 volumes:
   db_data:
