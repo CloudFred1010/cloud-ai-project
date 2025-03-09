@@ -1,73 +1,44 @@
+from fastapi import HTTPException
+from jose import jwt, JWTError
+from jose.utils import base64url_decode
+from cryptography.hazmat.primitives.asymmetric import rsa
 import requests
-from fastapi import HTTPException, Header
-from jose import jwt
-import base64
-import json
-import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Keycloak Configuration
-KEYCLOAK_SERVER = "http://localhost:8080/"
+KEYCLOAK_SERVER = "http://localhost:8080"
 KEYCLOAK_REALM = "master"
-KEYCLOAK_CLIENT_ID = "fastapi-client"
-KEYCLOAK_CLIENT_SECRET = "vqciZUAUyJJchQJZkm1K4stgK9pS5eDA"
+ALGORITHM = "RS256"
+AUDIENCE = "fastapi-client"
+ISSUER = f"{KEYCLOAK_SERVER}/realms/{KEYCLOAK_REALM}"
 
-def get_current_user(authorization: str = Header(None)):
-    """Extracts and validates the user token from the Authorization header."""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
+def get_keycloak_public_key(token):
+    headers = jwt.get_unverified_header(token)
+    kid = headers.get('kid')
+    jwks_url = f"{KEYCLOAK_SERVER}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
+    jwks = requests.get(jwks_url).json()
 
-    parts = authorization.split(" ")
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
+    key = next((k for k in jwks['keys'] if k['kid'] == kid), None)
+    if not key:
+        raise HTTPException(status_code=401, detail="Public key not found")
 
-    token = parts[1]
+    e = int.from_bytes(base64url_decode(key['e'].encode('utf-8')), 'big')
+    n = int.from_bytes(base64url_decode(key['n'].encode('utf-8')), 'big')
+    public_key = rsa.RSAPublicNumbers(e, n).public_key()
+    return public_key
 
+async def get_current_user(token: str):
     try:
-        # Fetch Keycloak's public key dynamically
-        keycloak_cert_url = f"{KEYCLOAK_SERVER}realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
-        certs_response = requests.get(keycloak_cert_url)
-
-        if certs_response.status_code != 200:
-            raise HTTPException(status_code=500, detail="Failed to fetch Keycloak public keys")
-
-        certs = certs_response.json()
-
-        # Extract the correct public key by matching 'kid' in token header
-        token_headers = jwt.get_unverified_header(token)
-        key_data = next((key for key in certs["keys"] if key["kid"] == token_headers["kid"]), None)
-
-        if not key_data:
-            raise HTTPException(status_code=401, detail="Invalid token: Key not found in Keycloak")
-
-        # Convert modulus ('n') and exponent ('e') into a proper PEM-formatted RSA key
-        public_key_pem = (
-            "-----BEGIN PUBLIC KEY-----\n"
-            + base64.b64encode(base64.b64decode(key_data["n"])).decode("utf-8")
-            + "\n-----END PUBLIC KEY-----"
-        )
-
-        # Decode and validate token
-        token_info = jwt.decode(
+        public_key = get_keycloak_public_key(token)
+        payload = jwt.decode(
             token,
-            public_key_pem,
-            algorithms=["RS256"],
-            options={"verify_aud": False}
+            public_key,
+            algorithms=[ALGORITHM],
+            audience=AUDIENCE,
+            issuer=ISSUER,
+            options={"verify_aud": True}
         )
-
-        if "preferred_username" not in token_info:
-            raise HTTPException(status_code=403, detail="Unauthorized access: Missing preferred_username")
-
-        logger.info(f"User authenticated: {token_info.get('preferred_username')}")
-        return token_info
-
-    except jwt.JWTError as jwt_error:
-        logger.error(f"JWT decoding error: {str(jwt_error)}")
-        raise HTTPException(status_code=401, detail="Invalid token: JWT verification failed")
-
-    except Exception as e:
-        logger.error(f"Token validation error: {str(e)}")
-        raise HTTPException(status_code=401, detail="Invalid token")
+        username = payload.get("preferred_username")
+        if not username:
+            raise HTTPException(status_code=401, detail="Missing username in token.")
+        return payload
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")

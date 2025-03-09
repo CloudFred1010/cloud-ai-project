@@ -4,3 +4,5 @@ psycopg2-binary
 SQLAlchemy
 python-dotenv
 python-keycloak
+python-jose[cryptography]
+requests
